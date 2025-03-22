@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MPU6050 Accelerometer Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+        .connection-status {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #dc3545;
+            margin-right: 5px;
+        }
+        .status-indicator.connected {
+            background-color: #28a745;
+        }
+        .settings-panel {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, button {
+            padding: 8px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+            border: none;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0069d9;
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 20px;
+        }
+        .values-display {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .value-card {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            width: 30%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        .value-title {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #6c757d;
+        }
+        .value-number {
+            font-size: 24px;
+            font-weight: bold;
+        }
+        .x-value { color: #dc3545; }
+        .y-value { color: #28a745; }
+        .z-value { color: #007bff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>MPU6050 Accelerometer Dashboard</h1>
+            <p>Real-time visualization of accelerometer data</p>
+        </header>
+
+        <div class="connection-status">
+            <div>
+                <span class="status-indicator" id="connectionIndicator"></span>
+                <span id="connectionStatus">Disconnected</span>
+            </div>
+            <div>
+                Last message: <span id="lastMessageTime">Never</span>
+            </div>
+        </div>
+
+        <div class="settings-panel">
+            <div class="form-group">
+                <label for="brokerUrl">MQTT Broker URL:</label>
+                <input type="text" id="brokerUrl" value="5.196.78.28" style="width: 250px;">
+                <label for="brokerPort">Port:</label>
+                <input type="number" id="brokerPort" value="1883" style="width: 80px;">
+            </div>
+            <div class="form-group">
+                <label for="topic">MQTT Topic:</label>
+                <input type="text" id="topic" value="mpu6050/acceleration" style="width: 250px;">
+            </div>
+            <div class="form-group">
+                <button id="connectButton">Connect</button>
+                <button id="disconnectButton" disabled>Disconnect</button>
+            </div>
+        </div>
+
+        <div class="values-display">
+            <div class="value-card">
+                <div class="value-title">X-Axis</div>
+                <div class="value-number x-value" id="xValue">0.00</div>
+                <div>g</div>
+            </div>
+            <div class="value-card">
+                <div class="value-title">Y-Axis</div>
+                <div class="value-number y-value" id="yValue">0.00</div>
+                <div>g</div>
+            </div>
+            <div class="value-card">
+                <div class="value-title">Z-Axis</div>
+                <div class="value-number z-value" id="zValue">0.00</div>
+                <div>g</div>
+            </div>
+        </div>
+
+        <div class="chart-container">
+            <canvas id="accelerometerChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let client;
+        let chart;
+        let dataPoints = {
+            x: [],
+            y: [],
+            z: []
+        };
+        const MAX_DATA_POINTS = 100;
+        
+        // Initialize Chart
+        function initChart() {
+            const ctx = document.getElementById('accelerometerChart').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array(MAX_DATA_POINTS).fill(''),
+                    datasets: [
+                        {
+                            label: 'X-Axis',
+                            data: Array(MAX_DATA_POINTS).fill(null),
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                            tension: 0.2,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Y-Axis',
+                            data: Array(MAX_DATA_POINTS).fill(null),
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                            tension: 0.2,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        },
+                        {
+                            label: 'Z-Axis',
+                            data: Array(MAX_DATA_POINTS).fill(null),
+                            borderColor: '#007bff',
+                            backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                            tension: 0.2,
+                            pointRadius: 0,
+                            borderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 0
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            min: -2,
+                            max: 2,
+                            title: {
+                                display: true,
+                                text: 'Acceleration (g)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    }
+                }
+            });
+        }
+
+        // Update chart with new data
+        function updateChart(x, y, z) {
+            // Update data arrays
+            dataPoints.x.push(x);
+            dataPoints.y.push(y);
+            dataPoints.z.push(z);
+            
+            // Keep only the last MAX_DATA_POINTS points
+            if (dataPoints.x.length > MAX_DATA_POINTS) {
+                dataPoints.x.shift();
+                dataPoints.y.shift();
+                dataPoints.z.shift();
+            }
+            
+            // Update chart datasets
+            chart.data.datasets[0].data = [...dataPoints.x];
+            chart.data.datasets[1].data = [...dataPoints.y];
+            chart.data.datasets[2].data = [...dataPoints.z];
+            
+            // Update chart
+            chart.update();
+            
+            // Update current values display
+            document.getElementById('xValue').innerText = x.toFixed(2);
+            document.getElementById('yValue').innerText = y.toFixed(2);
+            document.getElementById('zValue').innerText = z.toFixed(2);
+        }
+
+        // Format current time for display
+        function getCurrentTimeString() {
+            const now = new Date();
+            return now.toLocaleTimeString();
+        }
+
+        // MQTT Connection setup
+        function setupMqttConnection() {
+            const brokerUrl = document.getElementById('brokerUrl').value;
+            const brokerPort = parseInt(document.getElementById('brokerPort').value);
+            const topic = document.getElementById('topic').value;
+            const clientId = "mpu6050_dashboard_" + Math.random().toString(16).substring(2, 8);
+            
+            // Create a client instance
+            client = new Paho.MQTT.Client(brokerUrl, brokerPort, clientId);
+            
+            // Set callback handlers
+            client.onConnectionLost = onConnectionLost;
+            client.onMessageArrived = onMessageArrived;
+            
+            // Connect the client
+            client.connect({
+                onSuccess: function() {
+                    console.log("Connected to MQTT broker");
+                    
+                    // Update UI
+                    document.getElementById('connectionStatus').innerText = "Connected";
+                    document.getElementById('connectionIndicator').classList.add('connected');
+                    document.getElementById('connectButton').disabled = true;
+                    document.getElementById('disconnectButton').disabled = false;
+                    
+                    // Subscribe to the topic
+                    client.subscribe(topic);
+                },
+                onFailure: function(responseObject) {
+                    console.log("Connection failed: " + responseObject.errorMessage);
+                    alert("Failed to connect to MQTT broker. Error: " + responseObject.errorMessage);
+                }
+            });
+        }
+
+        // Handle lost connection
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                console.log("Connection lost: " + responseObject.errorMessage);
+                
+                // Update UI
+                document.getElementById('connectionStatus').innerText = "Disconnected";
+                document.getElementById('connectionIndicator').classList.remove('connected');
+                document.getElementById('connectButton').disabled = false;
+                document.getElementById('disconnectButton').disabled = true;
+            }
+        }
+
+        // Handle incoming messages
+        function onMessageArrived(message) {
+            console.log("Message arrived: " + message.payloadString);
+            
+            // Update last message time
+            document.getElementById('lastMessageTime').innerText = getCurrentTimeString();
+            
+            try {
+                // Parse the JSON message
+                const data = JSON.parse(message.payloadString);
+                
+                // Update chart with new data
+                updateChart(data.x, data.y, data.z);
+            } catch (e) {
+                console.error("Error parsing message: ", e);
+            }
+        }
+
+        // Disconnect from MQTT broker
+        function disconnectMqtt() {
+            if (client && client.isConnected()) {
+                client.disconnect();
+                console.log("Disconnected from MQTT broker");
+                
+                // Update UI
+                document.getElementById('connectionStatus').innerText = "Disconnected";
+                document.getElementById('connectionIndicator').classList.remove('connected');
+                document.getElementById('connectButton').disabled = false;
+                document.getElementById('disconnectButton').disabled = true;
+            }
+        }
+
+        // Initialize when document is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize chart
+            initChart();
+            
+            // Setup event listeners
+            document.getElementById('connectButton').addEventListener('click', setupMqttConnection);
+            document.getElementById('disconnectButton').addEventListener('click', disconnectMqtt);
+        });
+    </script>
+</body>
+</html>
